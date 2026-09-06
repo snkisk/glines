@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>glines - Dot Edition Prototype Ver.0.5</title>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:#17121d;color:#fff4df;font-family:system-ui,"Yu Gothic",sans-serif}
+body{display:flex;justify-content:center;padding:18px}
+#app{width:min(720px,100%)}
+h1{text-align:center;margin:0 0 5px;letter-spacing:.12em;font-size:30px}
+.sub{text-align:center;opacity:.7;font-size:12px;margin-bottom:12px}
+.panel{background:#211a2b;border:2px solid #62516e;border-radius:14px;padding:14px;box-shadow:0 12px 35px #0008}
+#title{text-align:center;padding:25px 10px}
+.logo{font-size:54px;font-weight:900;letter-spacing:.14em;margin:10px 0}
+.modeBtns{display:grid;gap:9px;max-width:320px;margin:22px auto}
+button{border:0;border-radius:9px;padding:10px 14px;background:#4b3a57;color:#fff;font-weight:700;cursor:pointer}
+button:hover{filter:brightness(1.15)}
+#game{display:none}
+#bar{display:flex;justify-content:space-between;font-weight:800;margin-bottom:9px}
+#boardWrap{background:#0c0910;padding:7px;border-radius:9px}
+canvas{display:block;width:100%;height:auto;image-rendering:pixelated;image-rendering:crisp-edges;background:#19131f}
+#message{text-align:center;min-height:24px;margin:8px 0;color:#ffcf67;font-weight:700}
+#info{display:flex;justify-content:space-between;font-size:13px}
+.help{text-align:center;font-size:12px;line-height:1.6;opacity:.72;margin-top:10px}
+.buttons{display:flex;gap:8px;justify-content:center;margin-top:10px;flex-wrap:wrap}
+#overlay{position:fixed;inset:0;background:#000b;display:none;place-items:center;padding:20px}
+#overlay .box{background:#261d30;border:2px solid #6c5978;border-radius:16px;padding:24px;text-align:center;max-width:420px}
+</style>
+</head>
+<body>
+<div id="app">
+<h1>glines</h1>
+<div class="sub">Dot Edition Prototype Ver.0.5</div>
+
+<div class="panel" id="title">
+  <div class="logo">glines</div>
+  <p>ドット絵 × コマ送り移動のLines系パズル</p>
+  <div class="modeBtns">
+    <button onclick="start('STORY')">STORY</button>
+    <button onclick="start('ENDLESS')">ENDLESS</button>
+    <button onclick="start('TIME')">TIME ATTACK（3分）</button>
+  </div>
+  <div class="help">矢印キー / WASD：カーソル　Enter / Space：決定<br>マウス / タッチでも操作できます</div>
+</div>
+
+<div class="panel" id="game">
+  <div id="bar"><span id="mode">ENDLESS</span><span id="score">SCORE 000000</span></div>
+  <div id="boardWrap"><canvas id="cv" width="320" height="320"></canvas></div>
+  <div id="message">玉を選んで移動先を選択してください。</div>
+  <div id="info"><span id="status"></span><span id="timer"></span></div>
+  <div class="buttons"><button onclick="restart()">リスタート</button><button onclick="titleBack()">タイトルへ</button></div>
+  <div class="help">同色5個以上をタテ・ヨコ・ナナメに揃えると消去。<br>移動は1マスずつコマ送り。消去は点滅→縮小→消滅。</div>
+</div>
+</div>
+
+<div id="overlay"><div class="box"><h2 id="ovTitle"></h2><p id="ovText"></p><button onclick="restart()">もう一度</button> <button onclick="titleBack()">タイトルへ</button></div></div>
+
+<script>
+const C=document.getElementById('cv'),X=C.getContext('2d');
+const N=9,S=320,NPIX=2, CELL=34;
+let board=[],cursor=0,selected=-1,score=0,mode='ENDLESS',over=false;
+let cursed=new Set(),timeLeft=180,timerId=null,animating=false;
+
+const PAL=[
+  {main:'#e84f5b',light:'#ff9a9f',dark:'#8d2632'},
+  {main:'#4d9ce8',light:'#a7d6ff',dark:'#225c96'},
+  {main:'#e9bd45',light:'#fff0a0',dark:'#8b6a18'},
+  {main:'#58bd77',light:'#a5f0bd',dark:'#287044'},
+  {main:'#a96be2',light:'#e1b9ff',dark:'#633590'},
+  {main:'#ed854b',light:'#ffc19d',dark:'#95421e'}
+];
+
+function rc(i){return [Math.floor(i/N),i%N]}
+function idx(r,c){return r*N+c}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms))}
+function msg(t){document.getElementById('message').textContent=t}
+
+function start(m){
+  mode=m; board=Array(81).fill(-1); cursor=0; selected=-1; score=0; over=false; animating=false;
+  cursed=new Set();
+  if(m==='STORY') while(cursed.size<7)cursed.add(Math.floor(Math.random()*81));
+  if(timerId)clearInterval(timerId); timeLeft=180;
+  document.getElementById('title').style.display='none';
+  document.getElementById('game').style.display='block';
+  document.getElementById('overlay').style.display='none';
+  document.getElementById('mode').textContent=m==='TIME'?'TIME ATTACK':m;
+  spawn(7); render();
+  if(m==='TIME') timerId=setInterval(()=>{if(!over){timeLeft--;render();if(timeLeft<=0)end('TIME UP','3分間終了！')}},1000);
+}
+function restart(){start(mode)}
+function titleBack(){if(timerId)clearInterval(timerId);document.getElementById('game').style.display='none';document.getElementById('title').style.display='block';document.getElementById('overlay').style.display='none'}
+
+function spawn(n){
+  let e=board.map((v,i)=>v<0?i:-1).filter(i=>i>=0);
+  for(let k=0;k<n&&e.length;k++){let p=Math.floor(Math.random()*e.length),i=e.splice(p,1)[0];board[i]=Math.floor(Math.random()*6)}
+}
+
+function neigh4(i){
+  const [r,c]=rc(i),a=[];
+  for(const [dr,dc] of [[-1,0],[1,0],[0,-1],[0,1]]){
+    let R=r+dr,Cc=c+dc;if(R>=0&&R<N&&Cc>=0&&Cc<N)a.push(idx(R,Cc))
+  } return a
+}
+function pathFind(a,b){
+  const q=[a],prev=new Map([[a,null]]);
+  while(q.length){
+    let x=q.shift(); if(x===b)break;
+    for(let y of neigh4(x))if(!prev.has(y)&&(board[y]<0||y===b)){prev.set(y,x);q.push(y)}
+  }
+  if(!prev.has(b))return null;
+  let p=[];for(let x=b;x!==null;x=prev.get(x))p.push(x);return p.reverse()
+}
+
+function lineFrom(s,dr,dc){
+  let col=board[s];if(col<0)return [];
+  let [r,c]=rc(s),a=[s],R=r+dr,Cc=c+dc;
+  while(R>=0&&R<N&&Cc>=0&&Cc<N&&board[idx(R,Cc)]===col){a.push(idx(R,Cc));R+=dr;Cc+=dc}
+  R=r-dr;Cc=c-dc;
+  while(R>=0&&R<N&&Cc>=0&&Cc<N&&board[idx(R,Cc)]===col){a.push(idx(R,Cc));R-=dr;Cc-=dc}
+  return a
+}
+function allLines(){
+  let set=new Set();
+  for(let i=0;i<81;i++)if(board[i]>=0)
+    for(let d of [[1,0],[0,1],[1,1],[1,-1]]){
+      let a=lineFrom(i,...d);if(a.length>=5)a.forEach(x=>set.add(x))
+    }
+  return [...set]
+}
+
+async function move(to){
+  if(animating||selected<0)return;
+  if(board[to]>=0){msg('そこには置けません。');return}
+  const from=selected,p=pathFind(from,to);
+  if(!p){msg('そこまで道が通っていません。');return}
+  const color=board[from];board[from]=-1;selected=-1;animating=true;
+  await animatePath(p,color);
+  board[to]=color;animating=false;render();
+  await sleep(90);
+
+  let lines=allLines();
+  if(lines.length) await clearAnim(lines);
+  else{
+    spawn(3);render();await sleep(180);
+    lines=allLines();if(lines.length)await clearAnim(lines);
+  }
+  if(mode==='STORY'&&cursed.size===0){end('STAGE CLEAR','すべての呪いを浄化しました！');return}
+  if(board.every(v=>v>=0))end('GAME OVER','フィールドが埋まりました。');
+  render();
+}
+
+async function animatePath(path,color){
+  // Each step is a separate frame: draw the ball at the exact cell center,
+  // pause, then jump to the next cell. No interpolation.
+  for(let k=0;k<path.length;k++){
+    drawAll(path[k],color,true);
+    await sleep(150);
+  }
+}
+
+async function clearAnim(cells){
+  const set=new Set(cells);
+  // Three crisp pixel-art frames.
+  for(let frame=0;frame<3;frame++){
+    drawClearFrame(set,frame);
+    await sleep(115);
+  }
+  cells.forEach(i=>{board[i]=-1;if(mode==='STORY')cursed.delete(i)});
+  score+=cells.length*10+(cells.length>=6?50:0);
+  render();
+}
+
+function drawClearFrame(set,frame){
+  X.clearRect(0,0,S,S);drawBoardBase();
+  for(let i=0;i<81;i++)if(board[i]>=0){
+    if(set.has(i))drawBall(i,board[i],frame);
+    else drawBall(i,board[i],0);
+  }
+  drawCursor();
+}
+
+function render(){drawAll(-1,-1,false);document.getElementById('score').textContent='SCORE '+String(score).padStart(6,'0');document.getElementById('status').textContent=mode==='STORY'?`呪い残り：${cursed.size}`:`空きマス：${board.filter(v=>v<0).length}`;document.getElementById('timer').textContent=mode==='TIME'?`TIME ${Math.max(0,timeLeft)}s`:''}
+
+function drawAll(travel=-1,color=-1,showTravel=false){
+  X.clearRect(0,0,S,S);drawBoardBase();
+  for(let i=0;i<81;i++)if(board[i]>=0)drawBall(i,board[i],0);
+  drawCursor();
+  if(showTravel&&travel>=0)drawBall(travel,color,0,true);
+}
+
+function drawBoardBase(){
+  X.fillStyle='#17111d';X.fillRect(0,0,S,S);
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+    let x=c*CELL+7,y=r*CELL+7;
+    X.fillStyle=(r+c)%2?'#33283d':'#382c43';X.fillRect(x,y,CELL-3,CELL-3);
+    X.fillStyle='#51445e';X.fillRect(x,y,CELL-3,2);X.fillRect(x,y,2,CELL-3);
+    if(cursed.has(idx(r,c))){
+      X.fillStyle='#8f3f8b';X.fillRect(x+3,y+3,CELL-9,2);
+      X.fillRect(x+7,y+7,2,2);X.fillRect(x+15,y+12,2,2);X.fillRect(x+10,y+20,2,2);
+    }
+  }
+}
+
+function drawBall(i,col,frame=0,travel=false){
+  let [r,c]=rc(i),x=c*CELL+24,y=r*CELL+24,p=PAL[col];
+  if(frame===1){ // bright flash
+    X.fillStyle='#fff8c9';X.fillRect(x-10,y-10,20,20);
+    X.fillStyle='#fff';X.fillRect(x-4,y-14,8,28);X.fillRect(x-14,y-4,28,8);
+  }else if(frame===2){ // tiny final pixel
+    X.fillStyle=p.light;X.fillRect(x-3,y-3,6,6);return
+  }
+  const map=[
+    "000111000","001111100","011111110","011122110","111222111","111222111","011111110","001111100","000111000"
+  ];
+  for(let yy=0;yy<9;yy++)for(let xx=0;xx<9;xx++){
+    let ch=map[yy][xx];if(ch==='0')continue;
+    X.fillStyle=ch==='2'?p.light:p.main;
+    X.fillRect(x-14+xx*3,y-14+yy*3,3,3);
+  }
+  X.fillStyle=p.dark;X.fillRect(x+8,y+5,3,3);X.fillRect(x+5,y+8,3,3);
+  if(travel){X.fillStyle='#fff';X.fillRect(x-7,y-8,3,3)}
+}
+
+function drawCursor(){
+  let [r,c]=rc(cursor),x=c*CELL+7,y=r*CELL+7;
+  X.fillStyle='#ffcf67';
+  X.fillRect(x,y,CELL-3,2);X.fillRect(x,y+CELL-5,CELL-3,2);
+  X.fillRect(x,y,2,CELL-3);X.fillRect(x+CELL-5,y,2,CELL-3);
+  if(selected>=0){
+    let [sr,sc]=rc(selected),sx=sc*CELL+24,sy=sr*CELL+24;
+    X.fillStyle='#fff';X.fillRect(sx-2,sy-16,4,3);X.fillRect(sx-2,sy+13,4,3);
+  }
+}
+
+function handle(i){
+  if(animating||over)return;cursor=i;
+  if(selected<0){if(board[i]>=0){selected=i;msg('移動先を選んでください。')}else msg('まず玉を選んでください.')}
+  else if(i===selected){selected=-1;msg('選択をキャンセルしました。')}
+  else move(i);
+  render();
+}
+
+C.addEventListener('click',e=>{let r=C.getBoundingClientRect(),x=(e.clientX-r.left)*320/r.width,y=(e.clientY-r.top)*320/r.height,c=Math.floor(x/CELL),rr=Math.floor(y/CELL);if(c>=0&&c<N&&rr>=0&&rr<N)handle(idx(rr,c))});
+document.addEventListener('keydown',e=>{
+  if(document.getElementById('game').style.display==='none'||animating)return;
+  let k=e.key.toLowerCase();
+  if(['arrowup','w'].includes(k)){e.preventDefault();cursor=idx((rc(cursor)[0]+N-1)%N,rc(cursor)[1]);render()}
+  else if(['arrowdown','s'].includes(k)){e.preventDefault();cursor=idx((rc(cursor)[0]+1)%N,rc(cursor)[1]);render()}
+  else if(['arrowleft','a'].includes(k)){e.preventDefault();cursor=idx(rc(cursor)[0],(rc(cursor)[1]+N-1)%N);render()}
+  else if(['arrowright','d'].includes(k)){e.preventDefault();cursor=idx(rc(cursor)[0],(rc(cursor)[1]+1)%N);render()}
+  else if(k==='enter'||k===' '){e.preventDefault();handle(cursor)}
+  else if(k==='escape'){selected=-1;msg('選択をキャンセルしました。');render()}
+});
+function end(t,txt){if(over)return;over=true;if(timerId)clearInterval(timerId);document.getElementById('ovTitle').textContent=t;document.getElementById('ovText').textContent=txt+' スコア：'+score;document.getElementById('overlay').style.display='grid'}
+</script>
+</body>
+</html>
